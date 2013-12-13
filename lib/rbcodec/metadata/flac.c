@@ -30,6 +30,8 @@
 #include "metadata_parsers.h"
 #include "logf.h"
 
+static unsigned int unpack_uint32(char *buffer, int offset);
+
 bool get_flac_metadata(int fd, struct mp3entry* id3)
 {
     /* A simple parser to read vital metadata from a FLAC file - length,
@@ -113,6 +115,57 @@ bool get_flac_metadata(int fd, struct mp3entry* id3)
                 return rc;
             }
         } 
+#ifdef HAVE_ALBUMART
+        else if (type == 6) /* 6 is the PICTURE block */
+        {
+            if(!id3->has_embedded_albumart) /* only use the first PICTURE */
+            {
+                char *picframe_buf = id3->id3v2buf;
+                unsigned int picframe_buf_size = MIN(sizeof(id3->id3v2buf), i);
+                int picframe_pos = 4; /* skip picture type */
+                int mime_length, description_length;
+
+                id3->albumart.pos = lseek(fd, 0, SEEK_CUR);
+
+                int bytes_read = read(fd, picframe_buf, picframe_buf_size);
+                i -= bytes_read;
+
+                mime_length = unpack_uint32(picframe_buf, picframe_pos);
+
+                char *mime = picframe_buf + picframe_pos + 4;
+                picframe_pos +=  4 + mime_length;
+
+                id3->albumart.type = AA_TYPE_UNKNOWN;
+                if (memcmp(mime, "image/", 6) == 0)
+                {
+                    mime += 6;
+                    if (strcmp(mime, "jpeg") == 0 || strcmp(mime, "jpg") == 0){
+                        id3->albumart.type = AA_TYPE_JPG;
+                    }else if (strcmp(mime, "png") == 0)
+                        id3->albumart.type = AA_TYPE_PNG;
+                }
+
+                description_length  = unpack_uint32(picframe_buf, picframe_pos);
+
+                /* 16 = skip picture width,height,color-depth,color-used */
+                picframe_pos += 4 + description_length + 16;
+
+                /* if we support the format and image length is in the buffer */
+                if(id3->albumart.type != AA_TYPE_UNKNOWN
+                   && (picframe_pos + 4) - picframe_buf_size > 0)
+                {
+                    id3->has_embedded_albumart = true;
+                    id3->albumart.size = unpack_uint32(picframe_buf, picframe_pos);
+                    id3->albumart.pos += picframe_pos + 4;
+                }
+            }
+
+            if (lseek(fd, i, SEEK_CUR) < 0)
+            {
+                return rc;
+            }
+        }
+#endif
         else if (!last_metadata)
         {
             /* Skip to next metadata block */
@@ -124,4 +177,11 @@ bool get_flac_metadata(int fd, struct mp3entry* id3)
     }
     
     return true;
+}
+
+static unsigned int unpack_uint32(char* buf, int offset){
+    return buf[offset] << 24 |
+           buf[offset + 1] << 16 |
+           buf[offset + 2] << 8 |
+           buf[offset + 3];
 }
